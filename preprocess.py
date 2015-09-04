@@ -117,10 +117,12 @@ TEST_CODE = ur"""
 #error The end is nigh, one is not true!
 #endif
 
+#if defined(ONE) && defined(TWO)
 #if ONE < TWO
 #define ONE_IS_LT_TWO 1
 #else
 #error It would appear that you cannot do basic math.
+#endif
 #endif
 
 /* This is totally necessary for portability.
@@ -488,7 +490,9 @@ class Preprocessor(object):
         self.macros = dict(DEFAULT_MACROS)
         if macros is not None:
             self.macros.update(macros)
-        self.macros[u"_Pragma"] = (lambda *args: self.pragma(args))
+        self.macros[u"_Pragma"] = (lambda *args: self.pragma(args) or [])
+        self.macros[u"defined"] = (lambda name: [("identifier",
+            unicode(int(join_tokens(name).strip() in self.macros)))])
         
         self.include_dirs = ([] if include_dirs is None else include_dirs)
         self.include_dirs.append(os.path.expanduser(u"~/Documents/include"))
@@ -551,7 +555,7 @@ class Preprocessor(object):
                 old_filename, old_lineno = self.filename, self.lineno
                 
                 with io.open(os.path.join(dir, name), "r") as f:
-                    self.preprocess_file(name, tokenize(preformat(f.read())))
+                    self.preprocess_tokens(name, tokenize(preformat(f.read())))
                 
                 self.update_filename(old_filename)
                 self.update_lineno(old_lineno)
