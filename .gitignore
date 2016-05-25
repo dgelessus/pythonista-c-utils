@@ -1,0 +1,6 @@
+.DS_Store
+
+*.pyc
+
+/cffipp/include_private/**
+
