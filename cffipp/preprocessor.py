@@ -97,6 +97,7 @@ class Preprocessor(object):
 		self.path = []
 		self.source = None
 		self.temp_path = []
+		self.included_files = set()
 		
 		# Probe the lexer for selected tokens
 		self.lexprobe()
@@ -394,9 +395,10 @@ class Preprocessor(object):
 				##print("Expanded {} to {}".format(args[argnum], expanded[argnum]))
 				rep[i:i+1] = expanded[argnum]
 		
-		# Join adjacent identifiers to prevent incorrect expansion
+		# Join adjacent tokens to prevent incorrect expansion
 		for i in range(len(rep)-1, 0, -1):
-			if rep[i-1].type == rep[i].type == self.t_ID:
+			if rep[i-1].type in (self.t_ID, self.t_INTEGER) and rep[i].type in (self.t_ID, self.t_INTEGER):
+				rep[i-1] = copy.copy(rep[i-1])
 				rep[i-1].value += rep[i].value
 				del rep[i]
 		
@@ -472,7 +474,9 @@ class Preprocessor(object):
 						j = i + 1
 						while j < len(tokens) and tokens[j].type in self.t_WS:
 							j += 1
-						if tokens[j].value == '(':
+						
+						if len(tokens) > j and tokens[j].value == '(':
+							# Macro function is called
 							tokcount, args, positions = self.collect_args(tokens[j:])
 							if not m.variadic and len(args) !=  len(m.arglist):
 								raise PreprocessorError("Macro {} requires {} arguments".format(t.value, len(m.arglist)), self.source, t.lineno)
@@ -493,11 +497,18 @@ class Preprocessor(object):
 										
 								# Get macro replacement text
 								rep = self.macro_expand_args(m, args)
-								rep = self.expand_macros(rep,expanded)
+								##rep = self.expand_macros(rep, expanded)
 								for r in rep:
 									r.lineno = t.lineno
 								tokens[i:j+tokcount] = rep
-								i += len(rep)
+								##i += len(rep)
+								# Intentionally do not increment i and do not call expand_macros.
+								# Instead, in the next loop iteration, let the replacement get expanded.
+								# This is important for macro functions that return the name of a macro function, such as
+								# a(something)(whatever)
+						else:
+							# Macro function is not called - just move on
+							i += 1
 					del expanded[t.value]
 					continue
 				elif t.value == '__LINE__':
@@ -520,10 +531,15 @@ class Preprocessor(object):
 				tokens[i].value = self.t_INTEGER_TYPE("0")
 			elif t.type == self.t_INTEGER:
 				tokens[i] = copy.copy(t)
-				# Strip off any trailing suffixes
 				tokens[i].value = str(tokens[i].value)
+				
+				# Strip off any trailing suffixes
 				while tokens[i].value[-1] not in "0123456789abcdefABCDEF":
 					tokens[i].value = tokens[i].value[:-1]
+				
+				# Convert octal integers to Python 3 style
+				if len(tokens[i].value) >= 2 and tokens[i].value[0] == "0" and tokens[i].value[1] not in "bx":
+					tokens[i].value = oct(int(tokens[i].value, 8))
 		
 		expr = "".join(str(x.value) for x in tokens)
 		expr = expr.replace("&&", " and ")
@@ -553,6 +569,7 @@ class Preprocessor(object):
 		enable = True
 		iftrigger = False
 		ifstack = []
+		unknown_directive = False
 		
 		for x in lines:
 			for i, tok in enumerate(x):
@@ -574,19 +591,22 @@ class Preprocessor(object):
 				
 				if name == "":
 					pass
+				elif name == "error":
+					if enable:
+						raise PreprocessorError("#error directive: {}".format("".join(arg.value for arg in args)), self.source, dirtokens[0].lineno)
 				elif name == 'define':
 					if enable:
 						for tok in self.expand_macros(chunk):
 							yield tok
 						chunk = []
 						self.define(args)
-				elif name == 'include':
+				elif name in ("include", "import"):
 					if enable:
 						for tok in self.expand_macros(chunk):
 							yield tok
 						chunk = []
 						oldfile = self.macros['__FILE__']
-						for tok in self.include(args):
+						for tok in self.include(args, once=(name == "import")):
 							yield tok
 						self.macros['__FILE__'] = oldfile
 						self.source = source
@@ -669,41 +689,48 @@ class Preprocessor(object):
 				# Normal text
 				if enable:
 					chunk += x
-		
-		for tok in self.expand_macros(chunk):
-			yield tok
-		
-		chunk = []
+			
+			yield from (chunk if unknown_directive else self.expand_macros(chunk))
+			
+			chunk = []
 	
-	def include(self, tokens):
-		"""Implementation of file-inclusion."""
+	def include(self, tokens, once=False):
+		"""Implementation of file-inclusion.
+		
+		If once is true, behave like Objective-C #import, i. e. do not include the file again if it has been included previously.
+		"""
 		
 		# Try to extract the filename and then process an include file
 		if not tokens:
-			return
-		if tokens:
-			if tokens[0].value != '<' and tokens[0].type != self.t_STRING:
-				tokens = self.expand_macros(tokens)
-			
-			if tokens[0].value == '<':
-				# Include <...>
-				i = 1
-				while i < len(tokens):
-					if tokens[i].value == '>':
-						break
-					i += 1
-				else:
-					raise PreprocessorError("Malformed #include <...>", self.source, tokens[0].lineno)
-				
-				filename = "".join(x.value for x in tokens[1:i])
-				path = self.path + [""] + self.temp_path
-			elif tokens[0].type == self.t_STRING:
-				filename = tokens[0].value[1:-1]
-				path = self.temp_path + [""] + self.path
-			else:
-				raise PreprocessorError("Malformed #include statement", self.source, tokens[0].lineno)
+			raise PreprocessorError("Malformed #include", self.source)
 		
-		##print('#include "{}" {{'.format(filename)) # }}
+		if tokens[0].value != '<' and tokens[0].type != self.t_STRING:
+			tokens = self.expand_macros(tokens)
+		
+		if tokens[0].value == '<':
+			# Include <...>
+			i = 1
+			while i < len(tokens):
+				if tokens[i].value == '>':
+					break
+				i += 1
+			else:
+				raise PreprocessorError("Malformed #include <...>", self.source, tokens[0].lineno)
+			
+			filename = "".join(x.value for x in tokens[1:i])
+			path = self.path + [""] + self.temp_path
+		elif tokens[0].type == self.t_STRING:
+			filename = tokens[0].value[1:-1]
+			path = self.temp_path + [""] + self.path
+		else:
+			raise PreprocessorError("Malformed #include statement", self.source, tokens[0].lineno)
+		
+		if once and filename in self.included_files:
+			return
+		else:
+			self.included_files.add(filename)
+		
+		print('#include "{}" {{'.format(filename)) # }}
 		
 		for p in path:
 			iname = os.path.join(p, filename)
@@ -732,7 +759,7 @@ class Preprocessor(object):
 			)
 		
 		# {
-		##print("}")
+		print("}")
 	
 	def define(self, tokens):
 		"""Define a new macro."""

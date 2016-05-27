@@ -17,9 +17,9 @@ DEFAULT_INCLUDE_PATH = [
 	"include/builtin",
 	"include/override",
 	"include_private/usr_include",
+	"include_private/frameworks",
 	# clang should go after usr_include. Some headers are present in both, and the usr_include version is usually easier to parse as it's not compiler-specific. Certain headers (such as stdbool.h) are only provided by the compiler, which is why we need these at all.
-	"clang",
-	"test",
+	"include/clang",
 ]
 
 DEFAULT_INCLUDE_PATH = [
@@ -64,8 +64,10 @@ class CFFIPreprocessor(object):
 		self.cdef("""
 		#define __asm(...) // Marks Assembler function names - not important here
 		#define __attribute__(...) // GCC attributes - can usually be ignored
+		#define __has_extension(...) 0 // No extensions here
 		#define __has_feature(...) 0 // Whatever feature it is, we probably don't support it
 		#define __has_include(...) 0 // Would be annoying to implement properly
+		#define __has_include_next(...) 0 // Same
 		#define _DARWIN_C_SOURCE // Enable the full Darwin APIs
 		
 		// Nonstandard type qualifiers that pycparser/cffi doesn't understand
@@ -83,6 +85,12 @@ class CFFIPreprocessor(object):
 		#define __inline inline
 		#define __signed signed
 		#define __volatile volatile
+		#define __asm__ asm
+		#define __const__ const
+		#define __inline__ inline
+		#define __signed__ signed
+		#define __typeof__ typeof
+		#define __volatile__ volatile
 		""", "<built-in>")
 	
 	def cdef(self, text, filename="<cdef>", header=None):
@@ -139,7 +147,7 @@ class CFFIPreprocessor(object):
 						packed = {"false": False, "true": True}[args[2]]
 						append = False
 					else:
-						raise PreprocessorError("Unknown #pragma directive:\n{}".format(joined))
+						raise preprocessor.PreprocessorError("Unknown #pragma directive:\n{}".format(joined))
 				
 				if append:
 					##print(joined, end="")
@@ -155,8 +163,13 @@ class CFFIPreprocessor(object):
 		# {
 		##print("}")
 	
-	def cdef_include(self, header):
+	def cdef_include(self, header, once=False):
 		"""Include the header with the given name."""
+		
+		if once and header in self.pp.included_files:
+			return
+		else:
+			self.pp.included_files.add(header)
 		
 		for path in self.pp.path:
 			filename = os.path.join(path, header)

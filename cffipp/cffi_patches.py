@@ -86,6 +86,9 @@ class BetterParser(cffi.cparser.Parser):
 				return int(self._parse_constant(exprnode.left) > self._parse_constant(exprnode.right))
 		elif isinstance(exprnode, pycparser.c_ast.TernaryOp):
 			return self._parse_constant(exprnode.iftrue) if self._parse_constant(exprnode.cond) else self._parse_constant(exprnode.iffalse)
+		elif isinstance(exprnode, pycparser.c_ast.Constant):
+			# Strip suffixes for long and unsigned ints from constants.
+			return super()._parse_constant(pycparser.c_ast.Constant(exprnode.type, exprnode.value.rstrip("LUlu"), exprnode.coord))
 		else:
 			return super()._parse_constant(exprnode, **kwargs)
 	
