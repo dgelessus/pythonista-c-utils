@@ -104,7 +104,7 @@ class BetterParser(cffi.cparser.Parser):
 				break
 		#
 		try:
-			self._inside_extern_python = False
+			self._inside_extern_python = '__cffi_extern_python_stop'
 			for decl in iterator:
 				if isinstance(decl, pycparser.c_ast.FuncDef):
 					self._parse_decl(decl.decl)
